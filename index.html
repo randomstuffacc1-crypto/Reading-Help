@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#f7f2e8" />
+  <title>ReadRise Literacy Lab</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Literacy Lab</p>
+        <h1>ReadRise</h1>
+      </div>
+      <button id="profileButton" class="profile-pill" aria-label="Choose reader profile">
+        <span id="profileInitial">R</span>
+        <span id="profileName">Reader</span>
+      </button>
+    </header>
+
+    <main class="content">
+      <section id="page-library" class="page active" aria-labelledby="library-title">
+        <div class="hero-card">
+          <div>
+            <p class="eyebrow">Adaptive library</p>
+            <h2 id="library-title">Find a just-right book</h2>
+            <p>Choose a reading level, paste your own book passage, or let the app recommend practice based on quiz and fluency scores.</p>
+          </div>
+          <div class="hero-stat">
+            <span id="todayMinutes">0</span>
+            <small>min today</small>
+          </div>
+        </div>
+
+        <div class="toolbar card flat">
+          <label>
+            Level
+            <select id="levelFilter">
+              <option value="all">All levels</option>
+              <option value="emerging">Emerging K–1</option>
+              <option value="building">Building 2–3</option>
+              <option value="confident">Confident 4–5</option>
+              <option value="advanced">Advanced 6–8</option>
+            </select>
+          </label>
+          <label>
+            Search
+            <input id="bookSearch" type="search" placeholder="space, animals, mystery..." />
+          </label>
+          <button id="openImporter" class="primary">Add book</button>
+        </div>
+
+        <div id="recommendationCard" class="card recommendation"></div>
+        <div id="bookGrid" class="book-grid"></div>
+      </section>
+
+      <section id="page-reader" class="page" aria-labelledby="reader-title">
+        <div class="reader-layout">
+          <aside class="reader-panel card">
+            <p class="eyebrow">Current book</p>
+            <h2 id="reader-title">Reader</h2>
+            <label>
+              Book
+              <select id="readerBookSelect"></select>
+            </label>
+            <div class="reader-controls">
+              <button id="prevPage" class="ghost">Back</button>
+              <button id="nextPage" class="ghost">Next</button>
+            </div>
+            <div class="reader-controls">
+              <button id="speakPage" class="ghost">Read aloud</button>
+              <button id="stopSpeak" class="ghost">Stop</button>
+            </div>
+            <div class="reader-controls">
+              <button id="markComplete" class="primary">Mark read</button>
+            </div>
+            <div class="metric-list">
+              <div><strong id="readerLevel">—</strong><span>Level</span></div>
+              <div><strong id="readerWords">0</strong><span>Words</span></div>
+              <div><strong id="readerGrade">—</strong><span>FK grade</span></div>
+            </div>
+          </aside>
+
+          <article class="reading-card card">
+            <div class="reader-header">
+              <div>
+                <p id="bookMeta" class="eyebrow">Tap any word</p>
+                <h2 id="bookTitle">Choose a book</h2>
+              </div>
+              <div class="page-meter"><span id="pageLabel">1 / 1</span></div>
+            </div>
+            <div id="readingText" class="reading-text" tabindex="0"></div>
+          </article>
+
+          <aside id="lookupPanel" class="lookup-panel card">
+            <p class="eyebrow">Word lookup</p>
+            <h3 id="lookupWord">Tap a word</h3>
+            <p id="lookupSentence" class="sentence-note">The sentence will appear here so the definition stays in context.</p>
+            <div id="definitionList" class="definition-list"></div>
+            <div class="lookup-actions">
+              <button id="hearWord" class="ghost">Hear word</button>
+              <button id="saveWord" class="primary">Save word</button>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="page-practice" class="page" aria-labelledby="practice-title">
+        <div class="hero-card compact">
+          <div>
+            <p class="eyebrow">Interactive checks</p>
+            <h2 id="practice-title">Practice after reading</h2>
+            <p>Mix comprehension, vocabulary-in-context, cloze reading, sentence order, phonics, and fluency.</p>
+          </div>
+        </div>
+
+        <div class="practice-grid">
+          <div class="card">
+            <label>
+              Practice book
+              <select id="practiceBookSelect"></select>
+            </label>
+            <label>
+              Activity
+              <select id="activityType">
+                <option value="comprehension">Comprehension quiz</option>
+                <option value="vocabulary">Vocabulary in context</option>
+                <option value="cloze">Cloze sentence</option>
+                <option value="sequence">Sentence order</option>
+                <option value="phonics">Phonics warm-up</option>
+                <option value="fluency">Fluency timer</option>
+              </select>
+            </label>
+            <button id="startActivity" class="primary wide">Start activity</button>
+          </div>
+
+          <div class="card activity-card">
+            <div id="activityArea">
+              <p class="empty-state">Choose a book and activity to begin.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="page-progress" class="page" aria-labelledby="progress-title">
+        <div class="hero-card compact">
+          <div>
+            <p class="eyebrow">Reader growth</p>
+            <h2 id="progress-title">Progress dashboard</h2>
+            <p>Track minutes, words read, comprehension accuracy, fluency, and vocabulary growth.</p>
+          </div>
+          <button id="exportData" class="ghost">Export</button>
+        </div>
+
+        <div class="stats-grid">
+          <div class="card stat"><strong id="totalMinutes">0</strong><span>Total minutes</span></div>
+          <div class="card stat"><strong id="totalWords">0</strong><span>Words read</span></div>
+          <div class="card stat"><strong id="avgQuiz">—</strong><span>Avg quiz</span></div>
+          <div class="card stat"><strong id="bestWpm">—</strong><span>Best WPM</span></div>
+        </div>
+
+        <div class="two-col">
+          <div class="card">
+            <h3>Word bank</h3>
+            <div id="wordBank" class="word-bank"></div>
+          </div>
+          <div class="card">
+            <h3>Recent activity</h3>
+            <div id="activityLog" class="activity-log"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="page-settings" class="page" aria-labelledby="settings-title">
+        <div class="hero-card compact">
+          <div>
+            <p class="eyebrow">Parent / teacher controls</p>
+            <h2 id="settings-title">Settings</h2>
+            <p>Customize reader supports and manage local data. Everything is stored on this device.</p>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <div class="card">
+            <h3>Reader profile</h3>
+            <label>Name <input id="readerNameInput" type="text" placeholder="Reader name" /></label>
+            <label>Starting level
+              <select id="profileLevelInput">
+                <option value="emerging">Emerging K–1</option>
+                <option value="building">Building 2–3</option>
+                <option value="confident">Confident 4–5</option>
+                <option value="advanced">Advanced 6–8</option>
+              </select>
+            </label>
+            <button id="saveProfile" class="primary">Save profile</button>
+          </div>
+
+          <div class="card">
+            <h3>Reading supports</h3>
+            <label>Text size <input id="textSize" type="range" min="18" max="34" value="22" /></label>
+            <label>Line spacing <input id="lineHeight" type="range" min="140" max="220" value="170" /></label>
+            <label class="toggle"><input id="focusMode" type="checkbox" /> Focus mode</label>
+            <label class="toggle"><input id="syllableMode" type="checkbox" /> Show syllable hints</label>
+            <button id="applyReaderSettings" class="primary">Apply</button>
+          </div>
+
+          <div class="card">
+            <h3>Data</h3>
+            <p class="small">This app uses localStorage. No accounts, no tracking, no child data leaves the device unless you export it or use online dictionary lookup.</p>
+            <label>Import saved data <input id="importData" type="file" accept="application/json" /></label>
+            <button id="resetData" class="danger">Reset all data</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <nav class="bottom-nav" aria-label="Main navigation">
+      <button data-page="library" class="active"><span>Library</span></button>
+      <button data-page="reader"><span>Reader</span></button>
+      <button data-page="practice"><span>Practice</span></button>
+      <button data-page="progress"><span>Progress</span></button>
+      <button data-page="settings"><span>Settings</span></button>
+    </nav>
+  </div>
+
+  <dialog id="importDialog" class="modal">
+    <form method="dialog" class="card modal-card">
+      <div class="modal-head">
+        <div>
+          <p class="eyebrow">Add your own text</p>
+          <h2>Import a book or passage</h2>
+        </div>
+        <button class="icon-button" value="cancel" aria-label="Close">×</button>
+      </div>
+      <label>Title <input id="newBookTitle" type="text" placeholder="The Garden Mystery" /></label>
+      <label>Author/source <input id="newBookAuthor" type="text" placeholder="Original, public domain, teacher-created..." /></label>
+      <label>Text <textarea id="newBookText" rows="10" placeholder="Paste a chapter, article, or reading passage here."></textarea></label>
+      <div id="importEstimate" class="estimate-box">Paste text to estimate level.</div>
+      <div class="modal-actions">
+        <button value="cancel" class="ghost">Cancel</button>
+        <button id="saveNewBook" value="default" class="primary">Save book</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
