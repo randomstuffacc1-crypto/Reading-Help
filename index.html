@@ -26,7 +26,7 @@
           <div>
             <p class="eyebrow">Adaptive library</p>
             <h2 id="library-title">Find a just-right book</h2>
-            <p>Choose a reading level, paste your own book passage, or let the app recommend practice based on quiz and fluency scores.</p>
+            <p>Choose a reading level, add text, or upload PDF books and picture books while preserving word lookup in context.</p>
           </div>
           <div class="hero-stat">
             <span id="todayMinutes">0</span>
@@ -49,7 +49,7 @@
             Search
             <input id="bookSearch" type="search" placeholder="space, animals, mystery..." />
           </label>
-          <button id="openImporter" class="primary">Add book</button>
+          <button id="openImporter" class="primary">Add book / PDF</button>
         </div>
 
         <div id="recommendationCard" class="card recommendation"></div>
@@ -75,6 +75,7 @@
             </div>
             <div class="reader-controls">
               <button id="markComplete" class="primary">Mark read</button>
+              <button id="ocrPage" class="ghost">OCR page text</button>
             </div>
             <div class="metric-list">
               <div><strong id="readerLevel">—</strong><span>Level</span></div>
@@ -90,6 +91,10 @@
                 <h2 id="bookTitle">Choose a book</h2>
               </div>
               <div class="page-meter"><span id="pageLabel">1 / 1</span></div>
+            </div>
+            <div id="pdfStage" class="pdf-stage" hidden>
+              <canvas id="pdfCanvas" class="pdf-canvas"></canvas>
+              <div id="pdfStatus" class="pdf-status">Loading PDF…</div>
             </div>
             <div id="readingText" class="reading-text" tabindex="0"></div>
           </article>
@@ -229,15 +234,38 @@
     <form method="dialog" class="card modal-card">
       <div class="modal-head">
         <div>
-          <p class="eyebrow">Add your own text</p>
-          <h2>Import a book or passage</h2>
+          <p class="eyebrow">Add your own book</p>
+          <h2>Import text, local PDFs, or hosted PDFs</h2>
         </div>
         <button class="icon-button" value="cancel" aria-label="Close">×</button>
       </div>
       <label>Title <input id="newBookTitle" type="text" placeholder="The Garden Mystery" /></label>
       <label>Author/source <input id="newBookAuthor" type="text" placeholder="Original, public domain, teacher-created..." /></label>
-      <label>Text <textarea id="newBookText" rows="10" placeholder="Paste a chapter, article, or reading passage here."></textarea></label>
-      <div id="importEstimate" class="estimate-box">Paste text to estimate level.</div>
+      <label>Import type
+        <select id="importType">
+          <option value="text">Paste text</option>
+          <option value="pdf">Upload PDF book to this device</option>
+          <option value="hostedPdf">Hosted PDF URL</option>
+          <option value="catalog">Hosted catalog JSON</option>
+        </select>
+      </label>
+      <div id="textImportFields">
+        <label>Text <textarea id="newBookText" rows="10" placeholder="Paste a chapter, article, or reading passage here."></textarea></label>
+      </div>
+      <div id="pdfImportFields" hidden>
+        <label>PDF file <input id="newBookPdf" type="file" accept="application/pdf" /></label>
+        <p class="small">This stores the PDF only in this browser. Use hosted PDFs when you want the same library across devices.</p>
+      </div>
+      <div id="hostedPdfFields" hidden>
+        <label>Hosted PDF URL <input id="newBookPdfUrl" type="url" placeholder="https://yourname.github.io/readrise/books/my-book.pdf" /></label>
+        <p class="small">Best option: put PDFs in a public <code>books/</code> folder on GitHub Pages, then paste the public PDF URL here. Text-based PDFs support immediate word lookup; image-only picture books can use OCR.</p>
+      </div>
+      <div id="catalogImportFields" hidden>
+        <label>Catalog JSON URL <input id="catalogUrl" type="url" placeholder="books/books.json" value="books/books.json" /></label>
+        <p class="small">A catalog lets you manage many hosted PDF books from one JSON file. Relative paths like <code>books/books.json</code> work when the app is hosted on GitHub Pages.</p>
+        <button id="loadDefaultCatalog" class="ghost">Use default catalog path</button>
+      </div>
+      <div id="importEstimate" class="estimate-box">Paste text or choose a PDF to estimate level.</div>
       <div class="modal-actions">
         <button value="cancel" class="ghost">Cancel</button>
         <button id="saveNewBook" value="default" class="primary">Save book</button>
@@ -247,6 +275,8 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

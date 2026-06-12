@@ -1,4 +1,11 @@
-const STORAGE_KEY = "readrise_v1";
+const STORAGE_KEY = "readrise_v2";
+const PDF_DB_NAME = "readrise_pdf_store";
+const PDF_DB_VERSION = 1;
+const PDF_STORE_NAME = "pdfs";
+
+if (window.pdfjsLib) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+}
 
 const LEVELS = {
   emerging: { label: "Emerging K–1", minGrade: 0, maxGrade: 1.9, targetWpm: 45 },
@@ -117,11 +124,19 @@ let selectedLookup = null;
 let activitySession = null;
 let fluencyTimer = null;
 let fluencyStart = null;
+let activePdfDoc = null;
+let activePdfBookId = null;
+let activePdfRenderTask = null;
+let activePdfPageText = "";
+let activePdfPageTextByIndex = {};
 
 function createInitialState() {
   return {
     profile: { name: "Reader", level: "building" },
     books: [],
+    hostedBooks: [],
+    catalogUrl: "books/books.json",
+    pdfTextCache: {},
     progress: {
       minutes: 0,
       words: 0,
@@ -143,7 +158,16 @@ function loadState() {
   try {
     const parsed = JSON.parse(raw);
     const base = createInitialState();
-    return { ...base, ...parsed, progress: { ...base.progress, ...(parsed.progress || {}) }, settings: { ...base.settings, ...(parsed.settings || {}) } };
+    return {
+      ...base,
+      ...parsed,
+      books: parsed.books || base.books,
+      hostedBooks: parsed.hostedBooks || base.hostedBooks,
+      catalogUrl: parsed.catalogUrl || base.catalogUrl,
+      pdfTextCache: { ...base.pdfTextCache, ...(parsed.pdfTextCache || {}) },
+      progress: { ...base.progress, ...(parsed.progress || {}) },
+      settings: { ...base.settings, ...(parsed.settings || {}) }
+    };
   } catch {
     return createInitialState();
   }
@@ -158,7 +182,7 @@ function todayKey() {
 }
 
 function allBooks() {
-  return [...DEFAULT_BOOKS, ...state.books];
+  return [...DEFAULT_BOOKS, ...(state.hostedBooks || []), ...state.books];
 }
 
 function getBook(id = currentBookId) {
@@ -181,6 +205,7 @@ function init() {
   bindSettings();
   applySettingsToDom();
   renderAll();
+  loadHostedCatalog(state.catalogUrl, { silent: true });
 }
 
 document.addEventListener("DOMContentLoaded", init);
@@ -214,6 +239,17 @@ function bindLibrary() {
   $("bookSearch").addEventListener("input", renderLibrary);
   $("openImporter").addEventListener("click", () => $("importDialog").showModal());
   $("newBookText").addEventListener("input", renderImportEstimate);
+  $("newBookPdf").addEventListener("change", renderImportEstimate);
+  $("newBookPdfUrl").addEventListener("input", renderImportEstimate);
+  $("catalogUrl").addEventListener("input", renderImportEstimate);
+  $("loadDefaultCatalog").addEventListener("click", e => {
+    e.preventDefault();
+    $("importType").value = "catalog";
+    toggleImportType();
+    $("catalogUrl").value = state.catalogUrl || "books/books.json";
+    renderImportEstimate();
+  });
+  $("importType").addEventListener("change", toggleImportType);
   $("saveNewBook").addEventListener("click", e => {
     e.preventDefault();
     saveImportedBook();
@@ -233,6 +269,7 @@ function bindReader() {
   $("speakPage").addEventListener("click", speakCurrentPage);
   $("stopSpeak").addEventListener("click", () => speechSynthesis.cancel());
   $("markComplete").addEventListener("click", markCurrentBookRead);
+  $("ocrPage").addEventListener("click", ocrCurrentPdfPage);
   $("hearWord").addEventListener("click", () => selectedLookup && speakText(selectedLookup.word));
   $("saveWord").addEventListener("click", saveLookupWord);
 }
@@ -311,13 +348,13 @@ function renderLibrary() {
   });
 
   grid.innerHTML = books.map(book => {
-    const metrics = analyzeText(book.text);
+    const metrics = analyzeText(getBookText(book));
     return `<div class="card book-card">
       <div>
         <span class="level-badge">${getLevelLabel(book.level)}</span>
         <h3>${escapeHtml(book.title)}</h3>
         <p>${escapeHtml(book.summary || "Imported reading text.")}</p>
-        <p class="small">${metrics.wordCount} words • est. grade ${metrics.grade.toFixed(1)} • ${escapeHtml(book.tags?.join(", ") || "custom")}</p>
+        <p class="small">${book.type === "pdf" ? (book.pdfUrl ? "Hosted PDF" : "Local PDF") : metrics.wordCount + " words"} • est. grade ${metrics.grade.toFixed(1)} • ${escapeHtml(book.tags?.join(", ") || "custom")}</p>
       </div>
       <div class="book-actions">
         <button class="primary" onclick="openBook('${book.id}')">Read</button>
@@ -400,23 +437,99 @@ function renderSelectors() {
   $("practiceBookSelect").value = currentBookId;
 }
 
-function renderReader() {
+async function renderReader() {
   const book = getBook();
-  const pages = paginateText(book.text);
-  currentPageIndex = clamp(currentPageIndex, 0, pages.length - 1);
-  const metrics = analyzeText(book.text);
+  const fullText = getBookText(book);
+  const metrics = analyzeText(fullText);
   $("readerBookSelect").value = book.id;
   $("bookTitle").textContent = book.title;
-  $("bookMeta").textContent = `${book.author} • ${getLevelLabel(book.level)}`;
-  $("pageLabel").textContent = `${currentPageIndex + 1} / ${pages.length}`;
+  $("bookMeta").textContent = `${book.author} • ${getLevelLabel(book.level)}${book.type === "pdf" ? " • PDF reader" : ""}`;
   $("readerLevel").textContent = getLevelLabel(book.level).replace(" ", "\n");
   $("readerWords").textContent = metrics.wordCount;
   $("readerGrade").textContent = metrics.grade.toFixed(1);
+
+  $("pdfStage").hidden = book.type !== "pdf";
+  $("ocrPage").style.display = book.type === "pdf" ? "inline-flex" : "none";
+
+  if (book.type === "pdf") {
+    await renderPdfReader(book);
+    return;
+  }
+
+  activePdfDoc = null;
+  activePdfBookId = null;
+  activePdfPageText = "";
+  const pages = paginateText(fullText);
+  currentPageIndex = clamp(currentPageIndex, 0, pages.length - 1);
+  $("pageLabel").textContent = `${currentPageIndex + 1} / ${pages.length}`;
 
   const readingText = $("readingText");
   readingText.classList.toggle("focus", state.settings.focusMode);
   readingText.innerHTML = tokenizePage(pages[currentPageIndex]);
   readingText.querySelectorAll(".word-token").forEach(token => token.addEventListener("click", () => lookupToken(token)));
+}
+
+async function renderPdfReader(book) {
+  const readingText = $("readingText");
+  readingText.classList.toggle("focus", state.settings.focusMode);
+  readingText.innerHTML = `<p class="empty-state">Loading PDF page text…</p>`;
+  $("pdfStatus").textContent = "Loading PDF…";
+
+  if (!window.pdfjsLib) {
+    $("pdfStatus").textContent = "PDF.js did not load. Check your internet connection, then reload.";
+    readingText.innerHTML = `<p>PDF support needs the PDF.js library from the CDN.</p>`;
+    return;
+  }
+
+  try {
+    if (!activePdfDoc || activePdfBookId !== book.id) {
+      const buffer = book.pdfUrl ? null : await getStoredPdf(book.pdfKey || book.id);
+      if (book.pdfUrl) {
+        activePdfDoc = await pdfjsLib.getDocument({ url: book.pdfUrl }).promise;
+      } else {
+        if (!buffer) throw new Error("PDF file not found on this device");
+        activePdfDoc = await pdfjsLib.getDocument({ data: buffer }).promise;
+      }
+      activePdfBookId = book.id;
+      activePdfPageTextByIndex = { ...(state.pdfTextCache?.[book.id] || {}) };
+    }
+
+    currentPageIndex = clamp(currentPageIndex, 0, activePdfDoc.numPages - 1);
+    $("pageLabel").textContent = `${currentPageIndex + 1} / ${activePdfDoc.numPages}`;
+    const page = await activePdfDoc.getPage(currentPageIndex + 1);
+    const viewport = page.getViewport({ scale: Math.min(1.8, Math.max(1.05, ($("pdfStage").clientWidth || 720) / page.getViewport({ scale: 1 }).width)) });
+    const canvas = $("pdfCanvas");
+    const context = canvas.getContext("2d");
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    canvas.style.width = "100%";
+    canvas.style.height = "auto";
+    if (activePdfRenderTask) activePdfRenderTask.cancel();
+    activePdfRenderTask = page.render({ canvasContext: context, viewport });
+    await activePdfRenderTask.promise.catch(err => {
+      if (err?.name !== "RenderingCancelledException") throw err;
+    });
+
+    let pageText = activePdfPageTextByIndex[currentPageIndex] || "";
+    if (!pageText) {
+      const textContent = await page.getTextContent();
+      pageText = textContent.items.map(item => item.str).join(" ").replace(/\s+/g, " ").trim();
+      if (pageText) {
+        cachePdfPageText(book.id, currentPageIndex, pageText);
+      }
+    }
+    activePdfPageText = pageText;
+    $("pdfStatus").textContent = pageText ? "PDF page loaded. Tap words in the extracted page text below." : "This page looks image-only. Use OCR page text to make words tappable.";
+    readingText.innerHTML = pageText
+      ? `<div class="pdf-text-label">Extracted text for word lookup</div>${tokenizePage(pageText)}`
+      : `<div class="pdf-text-label">No embedded text found</div><p>Tap <strong>OCR page text</strong> to extract words from this picture page, then tap any word for a context definition.</p>`;
+    readingText.querySelectorAll(".word-token").forEach(token => token.addEventListener("click", () => lookupToken(token)));
+  } catch (error) {
+    $("pdfStatus").textContent = error.message || "Could not open PDF.";
+    readingText.innerHTML = book.pdfUrl
+      ? `<p>Could not open this hosted PDF. Check that the URL is public, allows browser access, and ends in a PDF file.</p>`
+      : `<p>Could not open this PDF on this device. Re-import the PDF if it was added in another browser.</p>`;
+  }
 }
 
 function paginateText(text) {
@@ -548,14 +661,16 @@ function saveLookupWord() {
 
 function changePage(delta) {
   const book = getBook();
-  const pages = paginateText(book.text);
-  currentPageIndex = clamp(currentPageIndex + delta, 0, pages.length - 1);
+  const pageCount = book.type === "pdf" && activePdfDoc && activePdfBookId === book.id
+    ? activePdfDoc.numPages
+    : paginateText(getBookText(book)).length;
+  currentPageIndex = clamp(currentPageIndex + delta, 0, Math.max(0, pageCount - 1));
   renderReader();
 }
 
 function speakCurrentPage() {
   const book = getBook();
-  const page = paginateText(book.text)[currentPageIndex];
+  const page = getCurrentPageText(book);
   speakText(page);
 }
 
@@ -570,7 +685,7 @@ function speakText(text) {
 
 function markCurrentBookRead() {
   const book = getBook();
-  const metrics = analyzeText(book.text);
+  const metrics = analyzeText(getBookText(book));
   const minutes = Math.max(1, Math.round(metrics.wordCount / 110));
   state.progress.words += metrics.wordCount;
   state.progress.minutes += minutes;
@@ -581,7 +696,37 @@ function markCurrentBookRead() {
   toast(`Added ${minutes} reading minute${minutes === 1 ? "" : "s"}`);
 }
 
+function toggleImportType() {
+  const type = $("importType").value;
+  $("textImportFields").hidden = type !== "text";
+  $("pdfImportFields").hidden = type !== "pdf";
+  $("hostedPdfFields").hidden = type !== "hostedPdf";
+  $("catalogImportFields").hidden = type !== "catalog";
+  renderImportEstimate();
+}
+
 function renderImportEstimate() {
+  const importType = $("importType").value;
+  if (importType === "pdf") {
+    const file = $("newBookPdf").files?.[0];
+    if (!file) {
+      $("importEstimate").textContent = "Choose a PDF book to import.";
+      return;
+    }
+    $("importEstimate").textContent = `${file.name} • ${(file.size / 1024 / 1024).toFixed(1)} MB • level will be estimated after text extraction in the reader.`;
+    return;
+  }
+  if (importType === "hostedPdf") {
+    const url = $("newBookPdfUrl").value.trim();
+    $("importEstimate").textContent = url ? "Hosted PDF will stream from the public URL and cache extracted text locally." : "Paste a public PDF URL, preferably from your GitHub Pages books folder.";
+    return;
+  }
+  if (importType === "catalog") {
+    const url = $("catalogUrl").value.trim() || "books/books.json";
+    $("importEstimate").textContent = `Catalog URL: ${url}. The app will load all book entries from that JSON file.`;
+    return;
+  }
+
   const text = $("newBookText").value.trim();
   if (!text) {
     $("importEstimate").textContent = "Paste text to estimate level.";
@@ -592,9 +737,86 @@ function renderImportEstimate() {
   $("importEstimate").textContent = `${metrics.wordCount} words • estimated FK grade ${metrics.grade.toFixed(1)} • suggested level: ${getLevelLabel(level)}`;
 }
 
-function saveImportedBook() {
+async function saveImportedBook() {
   const title = $("newBookTitle").value.trim();
   const author = $("newBookAuthor").value.trim() || "Imported";
+  const importType = $("importType").value;
+
+  if (importType === "catalog") {
+    const url = $("catalogUrl").value.trim() || "books/books.json";
+    const count = await loadHostedCatalog(url, { silent: false });
+    if (count !== null) {
+      state.catalogUrl = url;
+      saveState();
+      clearImporter();
+      $("importDialog").close();
+      renderAll();
+      toast(`Loaded ${count} hosted book${count === 1 ? "" : "s"}`);
+    }
+    return;
+  }
+
+  if (importType === "hostedPdf") {
+    const url = $("newBookPdfUrl").value.trim();
+    if (!title || !url) return toast("Add a title and hosted PDF URL");
+    const id = `hosted-${Date.now()}`;
+    const book = {
+      id,
+      type: "pdf",
+      source: "hosted",
+      pdfUrl: url,
+      title,
+      author,
+      text: "",
+      level: state.profile.level || "building",
+      tags: ["hosted", "pdf"],
+      summary: `Hosted PDF streamed from ${url}. Text is extracted page-by-page for word lookup.`,
+      questions: []
+    };
+    state.books.push(book);
+    currentBookId = book.id;
+    state.currentBookId = book.id;
+    saveState();
+    clearImporter();
+    $("importDialog").close();
+    renderAll();
+    showPage("reader");
+    toast("Hosted PDF added");
+    return;
+  }
+
+  if (importType === "pdf") {
+    const file = $("newBookPdf").files?.[0];
+    if (!title || !file) return toast("Add a title and choose a PDF");
+    if (file.type !== "application/pdf") return toast("Choose a PDF file");
+
+    const id = `pdf-${Date.now()}`;
+    const arrayBuffer = await file.arrayBuffer();
+    await saveStoredPdf(id, arrayBuffer);
+    const book = {
+      id,
+      type: "pdf",
+      pdfKey: id,
+      title,
+      author,
+      text: "",
+      level: state.profile.level || "building",
+      tags: ["pdf", "picture book"],
+      summary: `PDF book imported from ${file.name}. Text is extracted page-by-page for word lookup.`,
+      questions: []
+    };
+    state.books.push(book);
+    currentBookId = book.id;
+    state.currentBookId = book.id;
+    saveState();
+    clearImporter();
+    $("importDialog").close();
+    renderAll();
+    showPage("reader");
+    toast("PDF book imported");
+    return;
+  }
+
   const text = $("newBookText").value.trim();
   if (!title || !text) return toast("Add a title and text");
   const metrics = analyzeText(text);
@@ -602,6 +824,7 @@ function saveImportedBook() {
     id: `custom-${Date.now()}`,
     title,
     author,
+    type: "text",
     text,
     level: gradeToLevel(metrics.grade),
     tags: ["custom"],
@@ -612,13 +835,22 @@ function saveImportedBook() {
   currentBookId = book.id;
   state.currentBookId = book.id;
   saveState();
-  $("newBookTitle").value = "";
-  $("newBookAuthor").value = "";
-  $("newBookText").value = "";
+  clearImporter();
   $("importDialog").close();
   renderAll();
   showPage("reader");
   toast("Book imported");
+}
+
+function clearImporter() {
+  $("newBookTitle").value = "";
+  $("newBookAuthor").value = "";
+  $("newBookText").value = "";
+  $("newBookPdf").value = "";
+  $("newBookPdfUrl").value = "";
+  $("catalogUrl").value = state.catalogUrl || "books/books.json";
+  $("importType").value = "text";
+  toggleImportType();
 }
 
 function startActivity() {
@@ -693,8 +925,9 @@ function quizAdvice(score, level) {
 }
 
 function generateComprehensionQuestions(book) {
-  const sentences = splitSentences(book.text).filter(s => s.split(/\s+/).length > 6);
-  const first = sentences[0] || book.text.slice(0, 120);
+  const sourceText = getBookText(book);
+  const sentences = splitSentences(sourceText).filter(s => s.split(/\s+/).length > 6);
+  const first = sentences[0] || sourceText.slice(0, 120);
   const last = sentences.at(-1) || first;
   return [
     { q: "Which sentence appeared in the text?", choices: shuffle([first, ...sentences.slice(1, 5)]).slice(0, 4), answer: first, skill: "literal recall" },
@@ -704,8 +937,9 @@ function generateComprehensionQuestions(book) {
 }
 
 function renderVocabulary(book) {
-  const words = chooseVocabularyWords(book.text, 5);
-  const sentenceMap = mapWordsToSentences(book.text, words);
+  const sourceText = getBookText(book);
+  const words = chooseVocabularyWords(sourceText, 5);
+  const sentenceMap = mapWordsToSentences(sourceText, words);
   const questions = words.map(word => {
     const local = LOCAL_DICTIONARY[word];
     const correct = local?.definition || inferDefinition(word);
@@ -723,8 +957,9 @@ function renderVocabulary(book) {
 }
 
 function renderCloze(book) {
-  const sentences = splitSentences(book.text).filter(s => s.split(/\s+/).length >= 8);
-  const sentence = sentences[Math.floor(Math.random() * sentences.length)] || book.text;
+  const sourceText = getBookText(book);
+  const sentences = splitSentences(sourceText).filter(s => s.split(/\s+/).length >= 8);
+  const sentence = sentences[Math.floor(Math.random() * sentences.length)] || sourceText;
   const words = sentence.match(/\b[A-Za-z]{5,}\b/g) || [];
   const target = words[Math.floor(Math.random() * words.length)] || "word";
   const prompt = sentence.replace(new RegExp(`\\b${escapeRegExp(target)}\\b`), `<input id="clozeAnswer" class="fill-input" aria-label="Missing word" />`);
@@ -738,7 +973,7 @@ function renderCloze(book) {
 }
 
 function renderSequence(book) {
-  const sentences = splitSentences(book.text).filter(s => s.split(/\s+/).length > 5).slice(0, 4);
+  const sentences = splitSentences(getBookText(book)).filter(s => s.split(/\s+/).length > 5).slice(0, 4);
   const shuffled = shuffle(sentences);
   $("activityArea").innerHTML = `<h3>Sentence order</h3><p>Move the sentences into the order they appeared in the text.</p><div id="sortList" class="sort-list">${shuffled.map((s, i) => sortItemHtml(s, i)).join("")}</div><button id="checkSequence" class="primary">Check order</button><p id="sequenceFeedback"></p>`;
   document.querySelectorAll("[data-up]").forEach(button => button.addEventListener("click", () => moveSortItem(button.closest(".sort-item"), -1)));
@@ -776,7 +1011,7 @@ function syllableText(word) {
 }
 
 function renderFluency(book) {
-  const passage = splitSentences(book.text).slice(0, 5).join(" ");
+  const passage = splitSentences(getBookText(book)).slice(0, 5).join(" ");
   $("activityArea").innerHTML = `<h3>Fluency timer</h3><p>Read the passage aloud. Press start, read for one minute or until finished, then enter words read and errors.</p><div class="timer-display" id="timerDisplay">60</div><p class="reading-text">${escapeHtml(passage)}</p><div class="toolbar flat"><label>Words read<input id="wordsRead" type="number" min="0" placeholder="e.g., 92"></label><label>Errors<input id="readingErrors" type="number" min="0" value="0"></label><button id="saveFluency" class="primary">Save</button></div><button id="startTimer" class="ghost">Start 60-second timer</button><p id="fluencyFeedback"></p>`;
   $("startTimer").addEventListener("click", startFluencyTimer);
   $("saveFluency").addEventListener("click", () => saveFluency(book));
@@ -878,6 +1113,144 @@ function importData(event) {
     }
   };
   reader.readAsText(file);
+}
+
+function getBookText(book) {
+  if (!book) return "";
+  if (book.type === "pdf") {
+    const cached = state.pdfTextCache?.[book.id] || {};
+    const combined = Object.keys(cached)
+      .sort((a, b) => Number(a) - Number(b))
+      .map(key => cached[key])
+      .join("\n\n")
+      .trim();
+    return combined || book.text || "";
+  }
+  return book.text || "";
+}
+
+function getCurrentPageText(book) {
+  if (book?.type === "pdf") return activePdfPageText || getBookText(book) || "No readable page text yet.";
+  return paginateText(getBookText(book))[currentPageIndex] || getBookText(book);
+}
+
+function cachePdfPageText(bookId, pageIndex, text) {
+  if (!text) return;
+  state.pdfTextCache ||= {};
+  state.pdfTextCache[bookId] ||= {};
+  state.pdfTextCache[bookId][pageIndex] = text;
+  activePdfPageTextByIndex[pageIndex] = text;
+  activePdfPageText = text;
+  const book = state.books.find(b => b.id === bookId) || (state.hostedBooks || []).find(b => b.id === bookId);
+  if (book) {
+    const metrics = analyzeText(getBookText(book));
+    book.level = gradeToLevel(metrics.grade);
+    book.summary = `PDF book with ${metrics.wordCount} extracted words so far; estimated grade ${metrics.grade.toFixed(1)}.`;
+  }
+  saveState();
+}
+
+
+async function loadHostedCatalog(url = "books/books.json", options = {}) {
+  const { silent = false } = options;
+  if (!url) return null;
+  try {
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    const rawBooks = Array.isArray(data) ? data : (data.books || []);
+    const base = new URL(url, window.location.href);
+    const hostedBooks = rawBooks.map((item, index) => {
+      const pdfPath = item.pdfUrl || item.url || item.pdf || "";
+      const resolvedPdfUrl = pdfPath ? new URL(pdfPath, base).href : "";
+      return {
+        id: item.id || `hosted-${index}-${slugify(item.title || "book")}`,
+        type: "pdf",
+        source: "hosted",
+        pdfUrl: resolvedPdfUrl,
+        title: item.title || `Hosted Book ${index + 1}`,
+        author: item.author || item.source || "Hosted library",
+        text: item.text || "",
+        level: item.level || "building",
+        tags: item.tags || ["hosted", "pdf"],
+        summary: item.summary || "Hosted PDF book. Text is extracted page-by-page for word lookup.",
+        questions: item.questions || []
+      };
+    }).filter(book => book.pdfUrl);
+
+    state.hostedBooks = hostedBooks;
+    state.catalogUrl = url;
+    saveState();
+    renderAll();
+    if (!silent) toast(`Hosted catalog loaded: ${hostedBooks.length} book${hostedBooks.length === 1 ? "" : "s"}`);
+    return hostedBooks.length;
+  } catch (error) {
+    if (!silent) toast("Could not load hosted catalog");
+    return null;
+  }
+}
+
+function slugify(value = "") {
+  return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "book";
+}
+
+function openPdfDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(PDF_DB_NAME, PDF_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(PDF_STORE_NAME)) db.createObjectStore(PDF_STORE_NAME);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function saveStoredPdf(key, arrayBuffer) {
+  const db = await openPdfDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(PDF_STORE_NAME, "readwrite");
+    tx.objectStore(PDF_STORE_NAME).put(arrayBuffer, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function getStoredPdf(key) {
+  const db = await openPdfDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(PDF_STORE_NAME, "readonly");
+    const request = tx.objectStore(PDF_STORE_NAME).get(key);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function ocrCurrentPdfPage() {
+  const book = getBook();
+  if (book.type !== "pdf") return toast("OCR is only for PDF picture pages");
+  if (!window.Tesseract) return toast("OCR library did not load. Check internet and reload.");
+  const canvas = $("pdfCanvas");
+  if (!canvas.width) return toast("Open a PDF page first");
+  $("pdfStatus").textContent = "OCR is reading this picture page…";
+  try {
+    const result = await Tesseract.recognize(canvas, "eng");
+    const text = (result?.data?.text || "").replace(/\s+/g, " ").trim();
+    if (!text) {
+      $("pdfStatus").textContent = "OCR did not find readable text on this page.";
+      return;
+    }
+    cachePdfPageText(book.id, currentPageIndex, text);
+    const readingText = $("readingText");
+    readingText.innerHTML = `<div class="pdf-text-label">OCR text for word lookup</div>${tokenizePage(text)}`;
+    readingText.querySelectorAll(".word-token").forEach(token => token.addEventListener("click", () => lookupToken(token)));
+    $("readerWords").textContent = analyzeText(getBookText(book)).wordCount;
+    $("pdfStatus").textContent = "OCR complete. Tap words in the OCR text below.";
+    toast("OCR text added for this page");
+  } catch (error) {
+    $("pdfStatus").textContent = "OCR failed on this page.";
+    toast("OCR failed");
+  }
 }
 
 function analyzeText(text) {

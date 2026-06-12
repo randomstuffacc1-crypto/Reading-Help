@@ -1,0 +1,22 @@
+{
+  "books": [
+    {
+      "id": "sample-hosted-book",
+      "title": "Sample Hosted PDF Book",
+      "author": "Replace with your source",
+      "level": "building",
+      "tags": ["hosted", "pdf", "sample"],
+      "summary": "Replace this entry with your own public-domain, licensed, or original PDF book.",
+      "pdf": "sample-book.pdf",
+      "questions": [
+        {
+          "type": "mc",
+          "q": "What should the reader do after finishing the page?",
+          "choices": ["Take a quiz", "Close the app", "Delete the book", "Skip every word"],
+          "answer": "Take a quiz",
+          "skill": "reading routine"
+        }
+      ]
+    }
+  ]
+}
